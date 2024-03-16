@@ -1,7 +1,10 @@
 use std::ops::{Add, Mul};
 
-use nannou::prelude::*;
-use rand::{distributions::Standard, prelude::*};
+use ::rand::{
+    distributions::{Distribution, Standard},
+    random, Rng,
+};
+use macroquad::{prelude::*, rand};
 
 #[derive(Clone, Copy)]
 struct Point {
@@ -15,6 +18,7 @@ const DELTA_TIME: f32 = 0.1;
 const REPELL_THRESHOLD: f32 = 20.;
 const FRICTION: f32 = 0.1;
 const TYPES: usize = 7;
+const RADIUS: f32 = 3.;
 
 impl Add<Point> for Point {
     type Output = Point;
@@ -67,7 +71,7 @@ enum Color {
 }
 
 impl Color {
-    fn to_nannou_color(&self) -> rgb::Rgb<nannou::color::encoding::Srgb, u8> {
+    fn to_macroquad_color(&self) -> macroquad::prelude::Color {
         match self {
             Color::RED => RED,
             Color::BLUE => BLUE,
@@ -114,27 +118,29 @@ struct Particle {
 }
 
 impl Particle {
-    fn draw(&self, draw: &nannou::draw::Draw) {
-        draw.ellipse()
-            .color(self.color.to_nannou_color())
-            .x_y(self.pos.x, self.pos.y)
-            .w_h(3., 3.);
+    fn draw(&self) {
+        draw_circle(
+            self.pos.x,
+            self.pos.y,
+            RADIUS,
+            self.color.to_macroquad_color(),
+        )
     }
 
-    fn update(&mut self, bound: &Rect, current_positions: &Vec<Particle>, rules: &Vec<Vec<f32>>) {
+    fn update(&mut self, current_positions: &Vec<Particle>, rules: &Vec<Vec<f32>>) {
         let this_pos = self.pos;
         for Particle { pos, vel: _, color } in current_positions.iter() {
             let mut dx = pos.x - this_pos.x;
-            dx = if dx.abs() < bound.w() - dx.abs() {
+            dx = if dx.abs() < screen_width() - dx.abs() {
                 dx
             } else {
-                -1.0 * dx.signum() * (bound.w() - dx.abs())
+                -1.0 * dx.signum() * (screen_width() - dx.abs())
             };
             let mut dy = pos.y - this_pos.y;
-            dy = if dy.abs() < bound.h() - dy.abs() {
+            dy = if dy.abs() < screen_height() - dy.abs() {
                 dy
             } else {
-                -1.0 * dy.signum() * (bound.h() - dy.abs())
+                -1.0 * dy.signum() * (screen_height() - dy.abs())
             };
             let dist = (dx.powi(2) + dy.powi(2)).sqrt();
             if dist > -0.001 && dist < 0.001 {
@@ -149,38 +155,26 @@ impl Particle {
         }
         self.vel = self.vel * (1. - FRICTION);
         self.pos = self.pos + (self.vel * DELTA_TIME);
-        if self.pos.x < bound.left() {
-            self.pos.x += bound.w();
-        } else if self.pos.x > bound.right() {
-            self.pos.x -= bound.w();
+        if self.pos.x < 0. {
+            self.pos.x += screen_width();
+        } else if self.pos.x > screen_width() {
+            self.pos.x -= screen_width();
         }
-        if self.pos.y < bound.bottom() {
-            self.pos.y += bound.h();
-        } else if self.pos.y > bound.top() {
-            self.pos.y -= bound.h();
+        if self.pos.y > screen_height() {
+            self.pos.y -= screen_height();
+        } else if self.pos.y < 0. {
+            self.pos.y += screen_height();
         }
     }
 }
 
-struct Model {
-    particles: Vec<Particle>,
-    rules: Vec<Vec<f32>>,
-    _window: window::Id,
-}
-
-fn model(app: &App) -> Model {
-    let _window = app
-        .new_window()
-        .view(view)
-        .build()
-        .expect("COULDNT BUILD WINDOW!");
-    let bounding = app.window_rect();
+fn setup() -> (Vec<Particle>, Vec<Vec<f32>>) {
     let mut particles = Vec::new();
     for _ in 0..PARTICLES {
         particles.push(Particle {
             pos: Point {
-                x: random_range(bounding.left(), bounding.right()),
-                y: random_range(bounding.left(), bounding.right()),
+                x: rand::gen_range(0., screen_width()),
+                y: rand::gen_range(0., screen_height()),
             },
             vel: Point { x: 0., y: 0. },
             color: random(),
@@ -208,37 +202,20 @@ fn model(app: &App) -> Model {
         }
         rules.push(rule_row);
     }
-
-    Model {
-        particles,
-        rules,
-        _window,
-    }
+    return (particles, rules);
 }
 
-fn update(app: &App, model: &mut Model, _update: Update) {
-    let bounding = app.window_rect();
-
-    let current_particle_positions = model.particles.clone();
-    let rules = model.rules.clone();
-
-    for particle in model.particles.iter_mut() {
-        particle.update(&bounding, &current_particle_positions, &rules);
+#[macroquad::main("BasicShapes")]
+async fn main() {
+    let (mut particles, rules) = setup();
+    loop {
+        let current_particle_positions = particles.clone();
+        clear_background(BLACK);
+        // for particle in particles.iter_mut() {
+        // particle.update(&current_particle_positions, &rules);
+        // particle.draw();
+        // }
+        // draw_circle(10., 10., 5., WHITE);
+        next_frame().await
     }
-}
-
-fn view(app: &App, model: &Model, frame: Frame) {
-    let draw = app.draw();
-
-    draw.background().color(BLACK);
-
-    for particle in model.particles.iter() {
-        particle.draw(&draw);
-    }
-
-    draw.to_frame(app, &frame).unwrap();
-}
-
-fn main() {
-    nannou::app(model).update(update).run();
 }
