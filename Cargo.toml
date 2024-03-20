@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 macroquad = "0.4.5"
 rand = "0.8.5"
+termion = "3.0.0"
 

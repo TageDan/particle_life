@@ -1,10 +1,14 @@
+use macroquad::color::Color;
+use std::io::stdout;
 use std::ops::{Add, Mul};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use termion;
 
-use ::rand::{
-    distributions::{Distribution, Standard},
-    random, Rng,
-};
+use ::rand::random;
+
 use macroquad::{prelude::*, rand};
+use termion::raw::IntoRawMode;
 
 #[derive(Clone, Copy)]
 struct Point {
@@ -12,13 +16,17 @@ struct Point {
     y: f32,
 }
 
-const PARTICLES: u32 = 600;
+const DOWN_KEY: char = '\u{f051}';
+const UP_KEY: char = '\u{f052}';
+const RIGHT_KEY: char = '\u{f04f}';
+const LEFT_KEY: char = '\u{f050}';
+const PARTICLES: u32 = 4500;
 const MAX_RADIUS: f32 = 150.;
-const DELTA_TIME: f32 = 0.1;
-const REPELL_THRESHOLD: f32 = 20.;
-const FRICTION: f32 = 0.1;
-const TYPES: usize = 7;
-const RADIUS: f32 = 3.;
+const DELTA_TIME: f32 = 0.02;
+const REPELL_THRESHOLD: f32 = 30.;
+const FRICTION: f32 = 0.2;
+const RADIUS: f32 = 1.;
+const THREADS: usize = 6;
 
 impl Add<Point> for Point {
     type Output = Point;
@@ -60,53 +68,14 @@ fn force(dist: f32, rule_factor: f32, p: Point) -> Point {
 }
 
 #[derive(Clone)]
-enum Color {
-    RED,
-    BLUE,
-    GREEN,
-    WHITE,
-    YELLOW,
-    PURPLE,
-    PINK,
-}
+struct RgbColor(u8, u8, u8);
 
-impl Color {
-    fn to_macroquad_color(&self) -> macroquad::prelude::Color {
-        match self {
-            Color::RED => RED,
-            Color::BLUE => BLUE,
-            Color::GREEN => GREEN,
-            Color::WHITE => WHITE,
-            Color::YELLOW => YELLOW,
-            Color::PURPLE => PURPLE,
-            Color::PINK => PINK,
-        }
+impl RgbColor {
+    fn to_macroquad(&self) -> Color {
+        Color::from_rgba(self.0, self.1, self.2, 255)
     }
-
-    fn to_index(&self) -> usize {
-        match self {
-            Color::RED => 0,
-            Color::BLUE => 1,
-            Color::WHITE => 2,
-            Color::YELLOW => 3,
-            Color::GREEN => 4,
-            Color::PURPLE => 5,
-            Color::PINK => 6,
-        }
-    }
-}
-
-impl Distribution<Color> for Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Color {
-        match rng.gen_range(0..7) {
-            0 => Color::RED,
-            1 => Color::BLUE,
-            2 => Color::WHITE,
-            3 => Color::YELLOW,
-            4 => Color::PURPLE,
-            5 => Color::PINK,
-            _ => Color::GREEN,
-        }
+    fn to_termion(&self) -> termion::color::Rgb {
+        termion::color::Rgb(self.0, self.1, self.2)
     }
 }
 
@@ -114,45 +83,21 @@ impl Distribution<Color> for Standard {
 struct Particle {
     pos: Point,
     vel: Point,
-    color: Color,
+    particle_type: usize,
 }
 
 impl Particle {
-    fn draw(&self) {
+    fn draw(&self, colors: &[RgbColor]) {
         draw_circle(
             self.pos.x,
             self.pos.y,
             RADIUS,
-            self.color.to_macroquad_color(),
+            colors[self.particle_type].to_macroquad(),
         )
     }
 
-    fn update(&mut self, current_positions: &Vec<Particle>, rules: &Vec<Vec<f32>>) {
-        let this_pos = self.pos;
-        for Particle { pos, vel: _, color } in current_positions.iter() {
-            let mut dx = pos.x - this_pos.x;
-            dx = if dx.abs() < screen_width() - dx.abs() {
-                dx
-            } else {
-                -1.0 * dx.signum() * (screen_width() - dx.abs())
-            };
-            let mut dy = pos.y - this_pos.y;
-            dy = if dy.abs() < screen_height() - dy.abs() {
-                dy
-            } else {
-                -1.0 * dy.signum() * (screen_height() - dy.abs())
-            };
-            let dist = (dx.powi(2) + dy.powi(2)).sqrt();
-            if dist > -0.001 && dist < 0.001 {
-                continue;
-            }
-            let force = force(
-                dist,
-                rules[self.color.to_index()][color.to_index()],
-                Point { x: dx, y: dy },
-            );
-            self.vel = self.vel + force * DELTA_TIME;
-        }
+    fn update(&mut self, force: Point) {
+        self.vel = self.vel + force * DELTA_TIME;
         self.vel = self.vel * (1. - FRICTION);
         self.pos = self.pos + (self.vel * DELTA_TIME);
         if self.pos.x < 0. {
@@ -168,7 +113,42 @@ impl Particle {
     }
 }
 
-fn setup() -> (Vec<Particle>, Vec<Vec<f32>>) {
+fn setup(types: usize) -> (Vec<Particle>, Vec<Vec<f32>>) {
+    let particles = generate_particles(types);
+
+    let rules = generate_random_rules(types);
+    return (particles, rules);
+}
+
+fn generate_random_rules(types: usize) -> Vec<Vec<f32>> {
+    let mut rules = Vec::new();
+    for _ in 0..types {
+        let mut rule_row = Vec::new();
+        for _ in 0..types {
+            let r = random::<f32>() * 2. - 1.;
+            // let r: f32 = 0.;
+            rule_row.push(r);
+        }
+        rules.push(rule_row);
+    }
+    rules
+}
+
+fn generate_zeroed_rules(types: usize) -> Vec<Vec<f32>> {
+    let mut rules = Vec::new();
+    for _ in 0..types {
+        let mut rule_row = Vec::new();
+        for _ in 0..types {
+            // let r = random::<f32>() * 2. - 1.;
+            let r: f32 = 0.;
+            rule_row.push(r);
+        }
+        rules.push(rule_row);
+    }
+    rules
+}
+
+fn generate_particles(types: usize) -> Vec<Particle> {
     let mut particles = Vec::new();
     for _ in 0..PARTICLES {
         particles.push(Particle {
@@ -177,45 +157,276 @@ fn setup() -> (Vec<Particle>, Vec<Vec<f32>>) {
                 y: rand::gen_range(0., screen_height()),
             },
             vel: Point { x: 0., y: 0. },
-            color: random(),
+            particle_type: rand::gen_range(0, types),
         })
     }
-    println!(
-        "Green is: {}, Red is: {}, Blue is: {},White is: {} ,Yellow is: {}, Purple is {}, Pink is {}",
-        Color::GREEN.to_index(),
-        Color::RED.to_index(),
-        Color::BLUE.to_index(),
-        Color::WHITE.to_index(),
-        Color::YELLOW.to_index(),
-        Color::PURPLE.to_index(),
-        Color::PINK.to_index()
-    );
-
-    let mut rules = Vec::new();
-    for c1 in 0..TYPES {
-        let mut rule_row = Vec::new();
-        for c2 in 0..TYPES {
-            let r = random::<f32>() * 2. - 1.;
-            rule_row.push(r);
-
-            println!("{} is attracted to {} by {}", c1, c2, r);
-        }
-        rules.push(rule_row);
-    }
-    return (particles, rules);
+    particles
 }
 
-#[macroquad::main("BasicShapes")]
+fn window_conf() -> Conf {
+    Conf {
+        window_title: "Particle Life".to_owned(),
+        window_width: 900,
+        window_height: 700,
+        ..Default::default()
+    }
+}
+
+fn set_background<T>(color: T) -> termion::color::Bg<T>
+where
+    T: termion::color::Color,
+{
+    termion::color::Bg(color)
+}
+
+fn print_display(colors: &[RgbColor], rules: &Vec<Vec<f32>>, cursor_pos: &[usize], types: usize) {
+    println!("{}{}", termion::clear::All, termion::cursor::Goto(1, 1));
+    print!("  ");
+    for i in 0..types {
+        print!(
+            "{} {}",
+            set_background(colors[i].to_termion()),
+            set_background(termion::color::Reset),
+        );
+    }
+    print!("\r\n  ");
+    for _ in 0..types {
+        print!("-");
+    }
+    print!("\r\n");
+    for i in 0..types {
+        print!(
+            "{} {}|",
+            set_background(colors[i].to_termion()),
+            set_background(termion::color::Reset),
+        );
+        for j in 0..types {
+            if rules[i][j] == 0. {
+                print!(
+                    "{}0{}",
+                    set_background(RgbColor(0, 0, 0).to_termion()),
+                    set_background(termion::color::Reset),
+                );
+            } else if rules[i][j] < 0. {
+                print!(
+                    "{}-{}",
+                    set_background(RgbColor((rules[i][j] * 255. * -1.) as u8, 0, 0).to_termion()),
+                    set_background(termion::color::Reset),
+                );
+            } else {
+                print!(
+                    "{}+{}",
+                    set_background(RgbColor(0, (rules[i][j] * 255.) as u8, 0).to_termion()),
+                    set_background(termion::color::Reset),
+                );
+            }
+        }
+        print!("\r\n");
+    }
+    cursor_goto_with_offset(cursor_pos, Some(&[2, 2]));
+}
+
+fn cursor_goto_with_offset(cursor_pos: &[usize], offset: Option<&[usize]>) {
+    if let Some(margin) = offset {
+        println!(
+            "{}",
+            termion::cursor::Goto(
+                (cursor_pos[0] + 1 + margin[0]) as u16,
+                (cursor_pos[1] + 1 + margin[1]) as u16
+            ) // termion::cursor::Goto(20, 20)
+        );
+    } else {
+        println!(
+            "{}",
+            termion::cursor::Goto((cursor_pos[0] + 1) as u16, (cursor_pos[1] + 1) as u16) // termion::cursor::Goto(20, 20)
+        );
+    }
+}
+
+fn generate_colors(types: usize) -> Vec<RgbColor> {
+    let mut colors = Vec::new();
+    for _ in 0..types {
+        colors.push(RgbColor(random::<u8>(), random::<u8>(), random::<u8>()));
+    }
+    colors
+}
+
+fn get_forces(rules: &Vec<Vec<f32>>, particles: &Vec<Particle>) -> Vec<Point> {
+    let rules = Arc::new(rules.clone());
+    let current_particle_positions = Arc::new(particles.clone());
+    let forces = Arc::new(Mutex::new(Vec::new()));
+    for _ in 0..current_particle_positions.len() {
+        forces.lock().unwrap().push(Point { x: 0., y: 0. });
+    }
+
+    let mut handles = vec![];
+    let chunksize = particles.len() / THREADS;
+    let mut particle_vec = Vec::new();
+    let mut i = 0;
+    let mut j = 0;
+    for _ in 0..particles.len() {
+        i += 1;
+        if i == chunksize {
+            particle_vec.push((j, i));
+            i = 0;
+            j += 1;
+        }
+    }
+    particle_vec.push((j, i));
+    particle_vec
+        .into_iter()
+        .for_each(|(i, particle_chunk_len)| {
+            let forces = Arc::clone(&forces);
+            let rules = Arc::clone(&rules);
+            let start_index = chunksize * i;
+            let current_particles = Arc::clone(&current_particle_positions);
+            let screen_width = screen_width();
+            let screen_height = screen_height();
+            let handle = thread::spawn(move || {
+                for i2 in 0..particle_chunk_len {
+                    let mut this_force = Point { x: 0., y: 0. };
+                    for other_particle in 0..current_particles.len() {
+                        if start_index + i2 == other_particle {
+                            continue;
+                        }
+                        let Particle {
+                            pos: this_pos,
+                            vel: _,
+                            particle_type: this_col,
+                        } = &current_particles[start_index + i2];
+                        let Particle {
+                            pos: other_pos,
+                            vel: _,
+                            particle_type: other_col,
+                        } = &current_particles[other_particle];
+                        let Point {
+                            x: mut dx,
+                            y: mut dy,
+                        } = *other_pos + *this_pos * -1.;
+                        if dx.abs() > screen_width / 2. {
+                            dx = dx.signum() * (dx.abs() - screen_width);
+                        }
+                        if dy.abs() > screen_height / 2. {
+                            dy = dy.signum() * (dy.abs() - screen_height);
+                        }
+                        let added_force = force(
+                            (dx.powi(2) + dy.powi(2)).sqrt(),
+                            rules[*this_col][*other_col],
+                            Point { x: dx, y: dy },
+                        );
+                        this_force = this_force + added_force;
+                    }
+                    forces.lock().expect("bleeeeeeeeeeee")[start_index + i2] = this_force;
+                }
+            });
+            handles.push(handle);
+        });
+
+    for handle in handles {
+        handle.join().expect("couldnt join handles");
+    }
+    return forces.lock().unwrap().to_owned().to_vec();
+}
+
+#[macroquad::main(window_conf)]
 async fn main() {
-    let (mut particles, rules) = setup();
+    clear_background(BLACK);
+    let _stdout = stdout().into_raw_mode().unwrap();
+    let mut cursor_pos: [usize; 2] = [0, 0];
+    let mut editing_rule = false;
+    let mut types: usize = 3;
+    let (mut particles, mut rules) = setup(types);
+    let mut colors = generate_colors(types);
+    let mut running = false;
     loop {
-        let current_particle_positions = particles.clone();
+        let last_frame_time = get_time();
+        if let Some(input) = get_char_pressed() {
+            match input {
+                DOWN_KEY => {
+                    if !editing_rule {
+                        cursor_pos[1] = cursor_pos[1].saturating_add(1);
+                    } else if rules[cursor_pos[1]][cursor_pos[0]] < 1. {
+                        rules[cursor_pos[1]][cursor_pos[0]] -= 0.1;
+                    }
+                }
+                UP_KEY => {
+                    if !editing_rule {
+                        cursor_pos[1] = cursor_pos[1].saturating_sub(1);
+                    } else if rules[cursor_pos[1]][cursor_pos[0]] < 1. {
+                        rules[cursor_pos[1]][cursor_pos[0]] += 0.1;
+                    }
+                }
+                LEFT_KEY => {
+                    if !editing_rule {
+                        cursor_pos[0] = cursor_pos[0].saturating_sub(1);
+                    }
+                }
+                RIGHT_KEY => {
+                    if !editing_rule {
+                        cursor_pos[0] = cursor_pos[0].saturating_add(1);
+                    }
+                }
+                '+' => {
+                    types += 1;
+                    colors.push(RgbColor(random::<u8>(), random::<u8>(), random::<u8>()));
+                    particles = generate_particles(types);
+                    running = false;
+                }
+                '-' => {
+                    types = types.saturating_sub(1);
+                    colors.pop();
+                    particles = generate_particles(types);
+                    running = false;
+                }
+
+                ' ' => {
+                    editing_rule = !editing_rule;
+                }
+                'r' => {
+                    running = !running;
+                }
+                'R' => {
+                    particles = generate_particles(types);
+                }
+                'G' => {
+                    rules = generate_random_rules(types);
+                }
+                'g' => {
+                    rules = generate_zeroed_rules(types);
+                }
+                'c' => {
+                    colors = generate_colors(types);
+                }
+                'q' => {
+                    panic!("quit");
+                }
+                _ => {}
+            }
+        }
+        if rules.len() < types {
+            rules.push(vec![0.; types]);
+            for rule_row in rules.iter_mut() {
+                while rule_row.len() < types {
+                    rule_row.push(0.);
+                }
+            }
+        }
+        print_display(&colors, &rules, &cursor_pos, types);
         clear_background(BLACK);
-        // for particle in particles.iter_mut() {
-        // particle.update(&current_particle_positions, &rules);
-        // particle.draw();
-        // }
-        // draw_circle(10., 10., 5., WHITE);
+
+        let forces: Vec<Point>;
+        if running {
+            forces = get_forces(&rules, &particles);
+        } else {
+            forces = vec![Point { x: 0., y: 0. }; particles.len()];
+        }
+        for particle in 0..particles.len() {
+            particles[particle].update(forces[particle]);
+            particles[particle].draw(&colors);
+        }
+        while get_time() - last_frame_time < 1. / 30. {
+            thread::sleep_ms(10);
+        }
         next_frame().await
     }
 }
