@@ -9,4 +9,6 @@ Therefore, windows users sadly cant use this program. This may change in the fut
 # Installation
 Clone this project into your directory of choice and then in that directory run 
 ```cargo build --release```
-then in the 
+and then you can find your binary as
+```./target/release/particle_life```
+
