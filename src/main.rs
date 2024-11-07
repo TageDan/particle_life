@@ -1,14 +1,17 @@
 use macroquad::color::Color;
+use macroquad::ui::{hash, root_ui, widgets};
+use miniquad::EventHandler;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::io::stdout;
 use std::ops::{Add, Mul};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use termion;
+// use termion;
 
 use ::rand::random;
 
 use macroquad::{prelude::*, rand};
-use termion::raw::IntoRawMode;
+// use termion::raw::IntoRawMode;
 
 #[derive(Clone, Copy)]
 struct Point {
@@ -16,7 +19,7 @@ struct Point {
     y: f32,
 }
 
-const MAX_TYPES: usize = 8;
+const MAX_TYPES: u32 = 8;
 const EDITABLE_VARIABLES: usize = 8;
 const CAMERA_SPEED: f32 = 5.;
 const DOWN_KEY: char = '\u{f051}';
@@ -79,16 +82,13 @@ impl RgbColor {
     fn to_macroquad(&self) -> Color {
         Color::from_rgba(self.0, self.1, self.2, 255)
     }
-    fn to_termion(&self) -> termion::color::Rgb {
-        termion::color::Rgb(self.0, self.1, self.2)
-    }
 }
 
 #[derive(Clone)]
 struct Particle {
     pos: Point,
     vel: Point,
-    particle_type: usize,
+    particle_type: u32,
 }
 
 impl Particle {
@@ -112,8 +112,8 @@ impl Particle {
 }
 
 fn setup(
-    types: usize,
-    particle_amount: usize,
+    types: u32,
+    particle_amount: u32,
     variables: &VariableState,
 ) -> (Vec<Particle>, Vec<Vec<f32>>) {
     let particles = generate_particles(types, particle_amount, variables);
@@ -122,7 +122,7 @@ fn setup(
     return (particles, rules);
 }
 
-fn generate_random_rules(types: usize) -> Vec<Vec<f32>> {
+fn generate_random_rules(types: u32) -> Vec<Vec<f32>> {
     let mut rules = Vec::new();
     for _ in 0..types {
         let mut rule_row = Vec::new();
@@ -151,8 +151,8 @@ fn generate_zeroed_rules(types: usize) -> Vec<Vec<f32>> {
 }
 
 fn generate_particles(
-    types: usize,
-    particle_amount: usize,
+    types: u32,
+    particle_amount: u32,
     variables: &VariableState,
 ) -> Vec<Particle> {
     let mut particles = Vec::new();
@@ -172,121 +172,13 @@ fn generate_particles(
 fn window_conf() -> Conf {
     Conf {
         window_title: "Particle Life".to_owned(),
-        window_width: 900,
-        window_height: 700,
+        window_width: 1000,
+        window_height: 800,
         ..Default::default()
     }
 }
 
-fn set_background<T>(color: T) -> termion::color::Bg<T>
-where
-    T: termion::color::Color,
-{
-    termion::color::Bg(color)
-}
-
-fn print_rules_display(types: &usize, colors: &[RgbColor], rules: &Vec<Vec<f32>>) {
-    print!("  ");
-    for i in 0..*types {
-        print!(
-            "{} {}",
-            set_background(colors[i].to_termion()),
-            set_background(termion::color::Reset),
-        );
-    }
-    print!("\r\n  ");
-    for _ in 0..*types {
-        print!("-");
-    }
-    print!("\r\n");
-    for i in 0..*types {
-        print!(
-            "{} {}|",
-            set_background(colors[i].to_termion()),
-            set_background(termion::color::Reset),
-        );
-        for j in 0..*types {
-            if rules[i][j] == 0. {
-                print!(
-                    "{}0{}",
-                    set_background(RgbColor(0, 0, 0).to_termion()),
-                    set_background(termion::color::Reset),
-                );
-            } else if rules[i][j] < 0. {
-                print!(
-                    "{}-{}",
-                    set_background(RgbColor((rules[i][j] * 255. * -1.) as u8, 0, 0).to_termion()),
-                    set_background(termion::color::Reset),
-                );
-            } else {
-                print!(
-                    "{}+{}",
-                    set_background(RgbColor(0, (rules[i][j] * 255.) as u8, 0).to_termion()),
-                    set_background(termion::color::Reset),
-                );
-            }
-        }
-        print!("\r\n");
-    }
-}
-
-fn print_display(
-    colors: &[RgbColor],
-    rules: &Vec<Vec<f32>>,
-    cursor_pos: &[usize],
-    variables: &VariableState,
-) {
-    println!("{}{}", termion::clear::All, termion::cursor::Goto(1, 1));
-    print_rules_display(&variables.types, colors, rules);
-    cursor_goto_with_offset(&[0, 0], Some(&[0, 5 + variables.types]));
-    print_variables_display(variables);
-    print!("\r\n\n------------------------\r\n");
-    print!("Particle Life! \r\nThis is a particle life simulation. \r\nOn the top of this menu you can see the rules of attraction between different colors. \r\nThen there are some variables that you can change for the simulation. \r\nUse the arrow keys to move around this menu.\r\nPress space to start changing the hovered value with up/down.\r\nPress space again to stop changing the value.\r\n\nCommands:\r\n(r) - run/pause\r\n(shift + r) - Generate new particles\r\n(c) - Generate new colors\r\n(+) - add new color/type\r\n(-) - remove color/type\r\n(shift + '+') - zoom in\r\n(shift + '-') - zoom out\r\n(W,A,S,D) - move camera\r\n(q)-quit");
-
-    match variables.state {
-        State::Rules => cursor_goto_with_offset(cursor_pos, Some(&[2, 2])),
-        State::Variables => cursor_goto_with_offset(cursor_pos, Some(&[15, 5 + variables.types])),
-    }
-}
-
-fn print_variables_display(variables: &VariableState) {
-    println!(
-        "{: <25}{} \r",
-        "Particle Amount:", variables.particle_amount
-    );
-    println!("{: <25}{} \r", "Delta time:", variables.delta_time);
-    println!("{: <25}{} \r", "Max force:", variables.max_force);
-    println!("{: <25}{} \r", "Grids per dimension:", variables.rows);
-    println!("{: <25}{} \r", "Grid size:", variables.grid_size);
-    println!(
-        "{: <25}{} (Maximum distance for variables to attract or repell other, recommended to be the same as Grid size)\r",
-        "Max distance:", variables.max_radius
-    );
-    println!(
-        "{: <25}{} (Particles that are closer than this distance always repell)\r",
-        "Repell distance:", variables.repell_threshold
-    );
-    println!("{: <25}{} \r", "Friction:", variables.friction);
-}
-
-fn cursor_goto_with_offset(cursor_pos: &[usize], offset: Option<&[usize]>) {
-    if let Some(margin) = offset {
-        println!(
-            "{}",
-            termion::cursor::Goto(
-                (cursor_pos[0] + 1 + margin[0]) as u16,
-                (cursor_pos[1] + 1 + margin[1]) as u16
-            )
-        );
-    } else {
-        println!(
-            "{}",
-            termion::cursor::Goto((cursor_pos[0] + 1) as u16, (cursor_pos[1] + 1) as u16)
-        );
-    }
-}
-
-fn generate_colors(types: usize) -> Vec<RgbColor> {
+fn generate_colors(types: u32) -> Vec<RgbColor> {
     let mut colors = Vec::new();
     for _ in 0..types {
         colors.push(RgbColor(random::<u8>(), random::<u8>(), random::<u8>()));
@@ -353,7 +245,7 @@ fn get_forces(
                         }
                         let added_force = force(
                             (dx.powi(2) + dy.powi(2)).sqrt(),
-                            rules[*this_col][*other_col],
+                            rules[*this_col as usize][*other_col as usize],
                             Point { x: dx, y: dy },
                             &variables,
                         );
@@ -431,231 +323,6 @@ fn get_grid(particles: &[Particle], variables: &VariableState) -> Vec<Vec<Vec<us
     grids
 }
 
-fn handle_input_edit_rules(
-    ch: char,
-    particles: &mut Vec<Particle>,
-    cursor_pos: &mut [usize; 2],
-    rules: &mut Vec<Vec<f32>>,
-    colors: &mut Vec<RgbColor>,
-    variables: &mut VariableState,
-) {
-    match ch {
-        DOWN_KEY => {
-            if !variables.editing {
-                if cursor_pos[1] < variables.types - 1 {
-                    cursor_pos[1] = cursor_pos[1].saturating_add(1);
-                } else {
-                    *cursor_pos = [0, 0];
-                    variables.state = State::Variables;
-                }
-            } else if rules[cursor_pos[1]][cursor_pos[0]] > -1. {
-                rules[cursor_pos[1]][cursor_pos[0]] -= 0.1;
-            }
-        }
-        UP_KEY => {
-            if !variables.editing {
-                if cursor_pos[1] > 0 {
-                    cursor_pos[1] = cursor_pos[1].saturating_sub(1);
-                }
-            } else if rules[cursor_pos[1]][cursor_pos[0]] < 1. {
-                rules[cursor_pos[1]][cursor_pos[0]] += 0.1;
-            }
-        }
-        LEFT_KEY => {
-            if !variables.editing && cursor_pos[0] > 0 {
-                cursor_pos[0] = cursor_pos[0].saturating_sub(1);
-            }
-        }
-        RIGHT_KEY => {
-            if !variables.editing && cursor_pos[0] < variables.types - 1 {
-                cursor_pos[0] = cursor_pos[0].saturating_add(1);
-            }
-        }
-        _ => (),
-    }
-}
-
-#[derive(Clone)]
-enum State {
-    Rules,
-    Variables,
-}
-
-fn handle_input(
-    variables: &mut VariableState,
-    particles: &mut Vec<Particle>,
-    cursor_pos: &mut [usize; 2],
-    rules: &mut Vec<Vec<f32>>,
-    colors: &mut Vec<RgbColor>,
-    camera: &mut Camera,
-) {
-    while let Some(input) = get_char_pressed() {
-        match input {
-            '+' => {
-                if variables.types >= MAX_TYPES {
-                    continue;
-                }
-                variables.types += 1;
-                colors.push(RgbColor(random::<u8>(), random::<u8>(), random::<u8>()));
-                *particles =
-                    generate_particles(variables.types, variables.particle_amount, &variables);
-                variables.running = false;
-                *rules = generate_random_rules(variables.types);
-            }
-            '-' => {
-                if variables.types < 2 {
-                    continue;
-                }
-                variables.types = variables.types.saturating_sub(1);
-                colors.pop();
-                *particles =
-                    generate_particles(variables.types, variables.particle_amount, &variables);
-                variables.running = false;
-                *rules = generate_random_rules(variables.types);
-            }
-
-            ' ' => {
-                variables.editing = !variables.editing;
-            }
-            'r' => {
-                variables.running = !variables.running;
-            }
-            'R' => {
-                *particles =
-                    generate_particles(variables.types, variables.particle_amount, &variables);
-            }
-            'G' => {
-                *rules = generate_random_rules(variables.types);
-            }
-            'g' => {
-                *rules = generate_zeroed_rules(variables.types);
-            }
-            'c' => {
-                *colors = generate_colors(variables.types);
-            }
-            'w' => {
-                camera.y -= CAMERA_SPEED * (1. - camera.zoom / 10.);
-            }
-            's' => {
-                camera.y += CAMERA_SPEED * (1. - camera.zoom / 10.);
-            }
-            'a' => {
-                camera.x -= CAMERA_SPEED * (1. - camera.zoom / 10.);
-            }
-            'd' => {
-                camera.x += CAMERA_SPEED * (1. - camera.zoom / 10.);
-            }
-            '_' => {
-                if camera.zoom > 0.01 {
-                    camera.zoom *= 0.98;
-                }
-            }
-            '?' => {
-                if camera.zoom < 5. {
-                    camera.zoom *= 1.02;
-                }
-            }
-            'q' => {
-                panic!("quit");
-            }
-            ch => match variables.state {
-                State::Rules => {
-                    handle_input_edit_rules(ch, particles, cursor_pos, rules, colors, variables)
-                }
-                State::Variables => handle_input_edit_variables(ch, variables, cursor_pos),
-            },
-        }
-    }
-}
-
-fn handle_input_edit_variables(
-    ch: char,
-    variables: &mut VariableState,
-    cursor_pos: &mut [usize; 2],
-) {
-    match ch {
-        DOWN_KEY => {
-            if variables.editing {
-                match cursor_pos[1] {
-                    0 => variables.particle_amount = variables.particle_amount.saturating_sub(100),
-                    1 => {
-                        variables.delta_time -= 0.0025;
-                        if variables.delta_time < 0. {
-                            variables.delta_time += 0.0025;
-                        }
-                    }
-                    2 => {
-                        variables.max_force -= 10.;
-                        if variables.max_force < 0. {
-                            variables.max_force += 10.;
-                        }
-                    }
-                    3 => {
-                        variables.rows = variables.rows.saturating_sub(1);
-                        variables.cols = variables.cols.saturating_sub(1);
-                    }
-                    4 => variables.grid_size = variables.grid_size.saturating_sub(10),
-                    5 => {
-                        variables.max_radius -= 5.;
-                        if variables.max_radius <= variables.repell_threshold {
-                            variables.max_radius += 5.;
-                        }
-                    }
-                    6 => {
-                        variables.repell_threshold -= 5.;
-                        if variables.repell_threshold <= 0. {
-                            variables.repell_threshold += 5.;
-                        }
-                    }
-                    7 => {
-                        variables.friction -= 0.05;
-                        if variables.friction <= 0. {
-                            variables.friction += 0.05;
-                        }
-                    }
-                    _ => (),
-                }
-            } else {
-                if cursor_pos[1] < EDITABLE_VARIABLES {
-                    cursor_pos[1] += 1;
-                }
-            }
-        }
-        UP_KEY => {
-            if variables.editing {
-                match cursor_pos[1] {
-                    0 => variables.particle_amount = variables.particle_amount.saturating_add(100),
-                    1 => variables.delta_time += 0.0025,
-                    2 => variables.max_force += 10.,
-                    3 => {
-                        variables.rows = variables.rows.saturating_add(1);
-                        variables.cols = variables.cols.saturating_add(1);
-                    }
-                    4 => variables.grid_size = variables.grid_size.saturating_add(10),
-                    5 => {
-                        variables.max_radius += 5.;
-                    }
-                    6 => {
-                        variables.repell_threshold += 5.;
-                        if variables.max_radius <= variables.repell_threshold {
-                            variables.repell_threshold -= 5.;
-                        }
-                    }
-                    7 => variables.friction += 0.05,
-                    _ => (),
-                }
-            } else {
-                if cursor_pos[1] <= 0 {
-                    variables.state = State::Rules
-                } else {
-                    cursor_pos[1] -= 1
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 struct Camera {
     x: f32,
     y: f32,
@@ -663,8 +330,115 @@ struct Camera {
 }
 
 impl Camera {
-    fn draw(&self, particles: &Vec<Particle>, colors: &Vec<RgbColor>, variables: &VariableState) {
+    fn draw(
+        &self,
+        particles: &mut Vec<Particle>,
+        colors: &mut Vec<RgbColor>,
+        variables: &mut VariableState,
+        rules: &mut Vec<Vec<f32>>,
+    ) {
         clear_background(GRAY);
+
+        widgets::Window::new(hash!(), Vec2::splat(0.), Vec2::new(300., 400.))
+            .label("Particle life")
+            .titlebar(true)
+            .movable(true)
+            .ui(&mut *root_ui(), |ui| {
+                ui.checkbox(hash!(), "running", &mut variables.running);
+                if ui.button(None, "randomize colors") {
+                    *colors = generate_colors(variables.types);
+                }
+                if ui.button(None, "regenerate particles") {
+                    *particles =
+                        generate_particles(variables.types, variables.particle_amount, &variables);
+                }
+                if ui.button(None, "randomize rules") {
+                    *rules = generate_random_rules(variables.types);
+                }
+                ui.tree_node(hash!(), "general", |ui| {
+                    let mut particle_amount = variables.particle_amount as f32;
+                    ui.slider(hash!(), "particles: ", 0.0..20_000.0, &mut particle_amount);
+                    let mut types = variables.types as f32;
+                    ui.slider(hash!(), "types: ", 1.0..(MAX_TYPES as f32), &mut types);
+                    if variables.types != types as u32 {
+                        variables.types = types as u32;
+                        *rules = generate_random_rules(variables.types);
+                        *colors = generate_colors(variables.types);
+                        *particles = generate_particles(
+                            variables.types,
+                            variables.particle_amount,
+                            &variables,
+                        );
+                    }
+
+                    if variables.particle_amount != particle_amount as u32 {
+                        variables.particle_amount = particle_amount as u32;
+                        *particles = generate_particles(
+                            variables.types,
+                            variables.particle_amount,
+                            &variables,
+                        );
+                    }
+                });
+                ui.tree_node(hash!(), "physics", |ui| {
+                    ui.slider(hash!(), "max_force", 0_f32..500., &mut variables.max_force);
+                    ui.slider(
+                        hash!(),
+                        "max_radius",
+                        0_f32..(variables.grid_size as f32),
+                        &mut variables.max_radius,
+                    );
+
+                    ui.slider(
+                        hash!(),
+                        "delta_time",
+                        0.005_f32..0.05,
+                        &mut variables.delta_time,
+                    );
+                    ui.slider(hash!(), "friction", 0_f32..10.0, &mut variables.friction);
+                    ui.slider(
+                        hash!(),
+                        "repell threshold: ",
+                        0_f32..(variables.grid_size as f32 / 2.),
+                        &mut variables.repell_threshold,
+                    );
+                });
+                ui.tree_node(hash!(), "world", |ui| {
+                    let mut grid_size = variables.grid_size as f32;
+                    ui.slider(hash!(), "grid_size: ", 0.0..100.0, &mut grid_size);
+                    variables.grid_size = grid_size as u32;
+                    let mut rows = variables.rows as f32;
+                    ui.slider(hash!(), "rows / cols ", 0.0..25.0, &mut rows);
+                    variables.rows = rows as u32;
+                    variables.cols = variables.rows;
+                });
+
+                ui.tree_node(hash!(), "types and rules", |ui| {
+                    for t1 in 0..variables.types {
+                        ui.tree_node(hash!(&format!("{}", t1)), &format!("type {}:", t1), |ui| {
+                            let color = colors[t1 as usize].clone();
+                            let mut red = color.0 as f32;
+                            let mut blue = color.1 as f32;
+                            let mut green = color.2 as f32;
+                            ui.slider(hash!(&format!("{}r", t1)), "r", 0.0..256.0, &mut red);
+                            ui.slider(hash!(&format!("{}b", t1)), "b", 0.0..256.0, &mut blue);
+                            ui.slider(hash!(&format!("{}g", t1)), "g", 0.0..256.0, &mut green);
+                            colors[t1 as usize] = RgbColor(red as u8, blue as u8, green as u8);
+                            for t2 in 0..variables.types {
+                                let mut attraction = rules[t1 as usize][t2 as usize];
+                                ui.slider(
+                                    hash!(&format!("{}{}", t1, t2)),
+                                    &format!("attraction to type {}", t2),
+                                    -1.0..1.0,
+                                    &mut attraction,
+                                );
+                                rules[t1 as usize][t2 as usize] = attraction;
+                            }
+                        });
+                    }
+                });
+            });
+
         self.fill_background(
             [0., 0.],
             [
@@ -685,7 +459,7 @@ impl Camera {
                 (pos.y - (variables.grid_size * variables.rows) as f32 / 2. - self.y) * self.zoom
                     + screen_height() / 2.,
                 (RADIUS * self.zoom).max(0.75),
-                colors[*particle_type].to_macroquad(),
+                colors[*particle_type as usize].to_macroquad(),
             )
         }
     }
@@ -711,15 +485,13 @@ impl Camera {
 
 #[derive(Clone)]
 struct VariableState {
-    particle_amount: usize,
-    types: usize,
-    editing: bool,
-    state: State,
+    particle_amount: u32,
+    types: u32,
     running: bool,
     max_force: f32,
-    grid_size: i32,
-    rows: i32,
-    cols: i32,
+    grid_size: u32,
+    rows: u32,
+    cols: u32,
     max_radius: f32,
     delta_time: f32,
     friction: f32,
@@ -729,14 +501,11 @@ struct VariableState {
 #[macroquad::main(window_conf)]
 async fn main() {
     // clear_background(BLACK);
-    let _stdout = stdout().into_raw_mode().unwrap();
-    let mut cursor_pos: [usize; 2] = [0, 0];
+    // let _stdout = stdout().into_raw_mode().unwrap();
     let mut variables = VariableState {
-        editing: false,
         types: 4,
         particle_amount: 10000,
         running: false,
-        state: State::Rules,
         max_force: 400.,
         grid_size: 70,
         rows: 6,
@@ -754,34 +523,48 @@ async fn main() {
         zoom: 1.,
     };
     loop {
-        if rules.len() < variables.types {
-            rules.push(vec![0.; variables.types]);
-            for rule_row in rules.iter_mut() {
-                while rule_row.len() < variables.types {
-                    rule_row.push(0.);
+        if variables.running {
+            if rules.len() < variables.types as usize {
+                rules.push(vec![0.; variables.types as usize]);
+                for rule_row in rules.iter_mut() {
+                    while rule_row.len() < variables.types as usize {
+                        rule_row.push(0.);
+                    }
                 }
             }
-        }
-        handle_input(
-            &mut variables,
-            &mut particles,
-            &mut cursor_pos,
-            &mut rules,
-            &mut colors,
-            &mut camera,
-        );
-        print_display(&colors, &rules, &cursor_pos, &variables);
 
-        let forces: Vec<Point>;
-        if variables.running {
-            forces = get_forces(&rules, &particles, &variables);
-        } else {
-            forces = vec![Point { x: 0., y: 0. }; particles.len()];
+            let forces = get_forces(&rules, &particles, &variables);
+            particles
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(idx, particle)| {
+                    particle.update(forces[idx], &variables);
+                });
         }
-        for particle in 0..particles.len() {
-            particles[particle].update(forces[particle], &variables);
+        if macroquad::input::is_key_down(KeyCode::Up) {
+            if camera.zoom > 1.0 {
+                camera.zoom -= 0.5;
+            } else {
+                camera.zoom = 0.5;
+            }
         }
-        camera.draw(&particles, &colors, &variables);
+        if macroquad::input::is_key_down(KeyCode::Down) {
+            camera.zoom += 0.5;
+        }
+        if macroquad::input::is_key_down(KeyCode::A) {
+            camera.x -= 1.0;
+        }
+        if macroquad::input::is_key_down(KeyCode::W) {
+            camera.y += 1.0;
+        }
+        if macroquad::input::is_key_down(KeyCode::S) {
+            camera.y -= 1.0;
+        }
+        if macroquad::input::is_key_down(KeyCode::D) {
+            camera.x += 1.0;
+        }
+
+        camera.draw(&mut particles, &mut colors, &mut variables, &mut rules);
         next_frame().await
     }
 }
