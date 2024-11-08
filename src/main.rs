@@ -1,7 +1,10 @@
 use macroquad::color::Color;
 use macroquad::ui::{hash, root_ui, widgets};
 use miniquad::EventHandler;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
+    IntoParallelRefMutIterator, ParallelIterator,
+};
 use std::io::stdout;
 use std::ops::{Add, Mul};
 use std::sync::{Arc, Mutex};
@@ -115,14 +118,14 @@ fn setup(
     types: u32,
     particle_amount: u32,
     variables: &VariableState,
-) -> (Vec<Particle>, Vec<Vec<f32>>) {
+) -> (Vec<Particle>, Arc<[Vec<f32>]>) {
     let particles = generate_particles(types, particle_amount, variables);
 
     let rules = generate_random_rules(types);
     return (particles, rules);
 }
 
-fn generate_random_rules(types: u32) -> Vec<Vec<f32>> {
+fn generate_random_rules(types: u32) -> Arc<[Vec<f32>]> {
     let mut rules = Vec::new();
     for _ in 0..types {
         let mut rule_row = Vec::new();
@@ -133,7 +136,7 @@ fn generate_random_rules(types: u32) -> Vec<Vec<f32>> {
         }
         rules.push(rule_row);
     }
-    rules
+    rules.into()
 }
 
 fn generate_zeroed_rules(types: usize) -> Vec<Vec<f32>> {
@@ -187,81 +190,73 @@ fn generate_colors(types: u32) -> Vec<RgbColor> {
 }
 
 fn get_forces(
-    rules: &Vec<Vec<f32>>,
-    particles: &Vec<Particle>,
+    rules: Arc<[Vec<f32>]>,
+    current_particle_positions: &Vec<Particle>,
     variables: &VariableState,
 ) -> Vec<Point> {
-    let rules = Arc::new(rules.clone());
-    let current_particle_positions = Arc::new(particles.clone());
-    let mut forces = Vec::new();
-    for _ in 0..current_particle_positions.len() {
-        forces.push(Point { x: 0., y: 0. });
-    }
-    let forces = Arc::new(Mutex::new(forces));
-
-    let mut handles = vec![];
-    let grid = Arc::new(get_grid(particles, variables));
+    let grid = get_grid(&current_particle_positions, variables);
     let variables = Arc::new(variables.clone());
+    let screen_width = (variables.grid_size * variables.cols) as f32;
+    let screen_height = (variables.grid_size * variables.rows) as f32;
+    let cols = variables.cols;
+    let rows = variables.rows;
 
-    for col in 0..grid.len() {
-        let forces = Arc::clone(&forces);
-        let rules = Arc::clone(&rules);
-        let grid = Arc::clone(&grid);
-        let variables = Arc::clone(&variables);
-        let variables = variables.clone();
-        let current_particles = Arc::clone(&current_particle_positions);
-        let screen_width = (variables.grid_size * variables.cols) as f32;
-        let screen_height = (variables.grid_size * variables.rows) as f32;
-        let cols = grid.len();
-        let rows = grid[0].len();
-        let handle = thread::spawn(move || {
-            for row in 0..grid[col].len() {
-                let compare_particles = get_particles_to_compare(col, row, cols, rows, &grid);
-                for particle_index in &grid[col][row] {
-                    let mut this_force = Point { x: 0., y: 0. };
-                    for other_particle in &compare_particles {
-                        if *particle_index == *other_particle {
-                            continue;
-                        }
-                        let Particle {
-                            pos: this_pos,
-                            vel: _,
-                            particle_type: this_col,
-                        } = &current_particles[*particle_index];
-                        let Particle {
-                            pos: other_pos,
-                            vel: _,
-                            particle_type: other_col,
-                        } = &current_particles[*other_particle];
-                        let Point {
-                            x: mut dx,
-                            y: mut dy,
-                        } = *other_pos + *this_pos * -1.;
-                        if dx.abs() > screen_width / 2. {
-                            dx = dx.signum() * (dx.abs() - screen_width);
-                        }
-                        if dy.abs() > screen_height / 2. {
-                            dy = dy.signum() * (dy.abs() - screen_height);
-                        }
-                        let added_force = force(
-                            (dx.powi(2) + dy.powi(2)).sqrt(),
-                            rules[*this_col as usize][*other_col as usize],
-                            Point { x: dx, y: dy },
-                            &variables,
-                        );
-                        this_force = this_force + added_force;
+    let forces: Vec<_> = (0..(cols as usize * rows as usize))
+        .into_par_iter()
+        .map(|idx| {
+            let row = idx / variables.cols as usize;
+            let col = idx % variables.cols as usize;
+            let compare_particles =
+                get_particles_to_compare(col, row, cols as usize, rows as usize, &grid);
+            let mut grid_force = Vec::with_capacity(grid[col][row].len());
+            for particle_index in &grid[col][row] {
+                let mut this_force = Point { x: 0., y: 0. };
+                for other_particle in &compare_particles {
+                    if *particle_index == *other_particle {
+                        continue;
                     }
-                    forces.lock().expect("bleeeeeeeeeeee")[*particle_index] = this_force;
+                    let Particle {
+                        pos: this_pos,
+                        vel: _,
+                        particle_type: this_col,
+                    } = &current_particle_positions[*particle_index];
+                    let Particle {
+                        pos: other_pos,
+                        vel: _,
+                        particle_type: other_col,
+                    } = &current_particle_positions[*other_particle];
+                    let Point {
+                        x: mut dx,
+                        y: mut dy,
+                    } = *other_pos + *this_pos * -1.;
+                    if dx.abs() > screen_width / 2. {
+                        dx = dx.signum() * (dx.abs() - screen_width);
+                    }
+                    if dy.abs() > screen_height / 2. {
+                        dy = dy.signum() * (dy.abs() - screen_height);
+                    }
+                    let added_force = force(
+                        (dx.powi(2) + dy.powi(2)).sqrt(),
+                        rules[*this_col as usize][*other_col as usize],
+                        Point { x: dx, y: dy },
+                        &variables,
+                    );
+                    this_force = this_force + added_force;
                 }
+                grid_force.push(this_force);
             }
-        });
-        handles.push(handle);
+            return grid_force;
+        })
+        .collect();
+    let mut final_forces = vec![Point { x: 0., y: 0. }; variables.particle_amount as usize];
+    for (c, col) in grid.iter().enumerate() {
+        for (r, row) in col.iter().enumerate() {
+            for (i, idx) in row.iter().enumerate() {
+                final_forces[*idx] = forces[r * cols as usize + c][i];
+            }
+        }
     }
-
-    for handle in handles {
-        handle.join().expect("couldnt join handles");
-    }
-    return forces.lock().unwrap().to_owned().to_vec();
+    return final_forces;
 }
 
 fn get_particles_to_compare(
@@ -269,33 +264,37 @@ fn get_particles_to_compare(
     row: usize,
     cols: usize,
     rows: usize,
-    grid: &Vec<Vec<Vec<usize>>>,
+    grid: &[Vec<Vec<usize>>],
 ) -> Vec<usize> {
-    let mut particles_to_compare = Vec::new();
+    let mut particles_to_compare = Vec::with_capacity(10);
     let col = col as i32;
     let row = row as i32;
     for i in -1_i32..2 {
         for j in -1_i32..2 {
             if col + i < 0 && row + j < 0 {
-                particles_to_compare.append(&mut grid[cols - 1][rows - 1].clone())
+                particles_to_compare.push(&grid[cols - 1][rows - 1])
             }
             if col + i < 0 {
-                particles_to_compare.append(&mut grid[cols - 1][(row + j) as usize % rows].clone())
+                particles_to_compare.push(&grid[cols - 1][(row + j) as usize % rows])
             } else if row + j < 0 {
-                particles_to_compare.append(&mut grid[(col + i) as usize % cols][rows - 1].clone())
+                particles_to_compare.push(&grid[(col + i) as usize % cols][rows - 1])
             } else {
                 particles_to_compare
-                    .append(&mut grid[(col + i) as usize % cols][(row + j) as usize % rows].clone())
+                    .push(&grid[(col + i) as usize % cols][(row + j) as usize % rows])
             }
         }
     }
     particles_to_compare
+        .iter()
+        .flat_map(|x| x.iter())
+        .map(|x| *x)
+        .collect()
 }
 
-fn get_grid(particles: &[Particle], variables: &VariableState) -> Vec<Vec<Vec<usize>>> {
-    let mut grids: Vec<Vec<Vec<usize>>> = Vec::new();
+fn get_grid(particles: &[Particle], variables: &VariableState) -> Arc<[Vec<Vec<usize>>]> {
+    let mut grids: Vec<Vec<Vec<usize>>> = Vec::with_capacity(variables.cols as usize);
     for _ in 0..variables.cols {
-        let mut col = Vec::new();
+        let mut col = Vec::with_capacity(variables.rows as usize);
         for _ in 0..variables.rows {
             col.push(Vec::new());
         }
@@ -320,7 +319,7 @@ fn get_grid(particles: &[Particle], variables: &VariableState) -> Vec<Vec<Vec<us
         }
         grids[x][y].push(i);
     }
-    grids
+    grids.into()
 }
 
 struct Camera {
@@ -335,7 +334,7 @@ impl Camera {
         particles: &mut Vec<Particle>,
         colors: &mut Vec<RgbColor>,
         variables: &mut VariableState,
-        rules: &mut Vec<Vec<f32>>,
+        rules: &mut Arc<[Vec<f32>]>,
     ) {
         clear_background(GRAY);
 
@@ -432,11 +431,17 @@ impl Camera {
                                     -1.0..1.0,
                                     &mut attraction,
                                 );
-                                rules[t1 as usize][t2 as usize] = attraction;
+                                let mut new_rules = (*rules).clone().to_vec();
+                                new_rules[t1 as usize][t2 as usize] = attraction;
+                                *rules = new_rules.into();
                             }
                         });
                     }
                 });
+
+                ui.label(None, "Camera Instructions:");
+                ui.label(None, "WASD to move");
+                ui.label(None, "UP/DOWN arrow keys to zoom in/out");
             });
 
         self.fill_background(
@@ -451,7 +456,7 @@ impl Camera {
             pos,
             vel: _,
             particle_type,
-        } in particles
+        } in particles.iter()
         {
             draw_circle(
                 (pos.x - (variables.grid_size * variables.cols) as f32 / 2. - self.x) * self.zoom
@@ -524,16 +529,7 @@ async fn main() {
     };
     loop {
         if variables.running {
-            if rules.len() < variables.types as usize {
-                rules.push(vec![0.; variables.types as usize]);
-                for rule_row in rules.iter_mut() {
-                    while rule_row.len() < variables.types as usize {
-                        rule_row.push(0.);
-                    }
-                }
-            }
-
-            let forces = get_forces(&rules, &particles, &variables);
+            let forces = get_forces(rules.clone(), &particles, &variables);
             particles
                 .par_iter_mut()
                 .enumerate()
@@ -541,27 +537,27 @@ async fn main() {
                     particle.update(forces[idx], &variables);
                 });
         }
-        if macroquad::input::is_key_down(KeyCode::Up) {
-            if camera.zoom > 1.0 {
-                camera.zoom -= 0.5;
+        if macroquad::input::is_key_down(KeyCode::Down) {
+            if camera.zoom > 0.5 + 0.2 {
+                camera.zoom -= 0.2;
             } else {
                 camera.zoom = 0.5;
             }
         }
-        if macroquad::input::is_key_down(KeyCode::Down) {
-            camera.zoom += 0.5;
+        if macroquad::input::is_key_down(KeyCode::Up) {
+            camera.zoom += 0.2;
         }
         if macroquad::input::is_key_down(KeyCode::A) {
-            camera.x -= 1.0;
+            camera.x -= 1.0 * 10. / camera.zoom;
         }
         if macroquad::input::is_key_down(KeyCode::W) {
-            camera.y += 1.0;
+            camera.y -= 1.0 * 10. / camera.zoom;
         }
         if macroquad::input::is_key_down(KeyCode::S) {
-            camera.y -= 1.0;
+            camera.y += 1.0 * 10. / camera.zoom;
         }
         if macroquad::input::is_key_down(KeyCode::D) {
-            camera.x += 1.0;
+            camera.x += 1.0 * 10. / camera.zoom;
         }
 
         camera.draw(&mut particles, &mut colors, &mut variables, &mut rules);
