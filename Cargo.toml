@@ -6,8 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-macroquad = "0.4.5"
-rand = "0.8.5"
+macroquad = "0.4.13"
 rayon = "1.10.0"
 # termion = "3.0.0"
 

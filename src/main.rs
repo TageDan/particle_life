@@ -11,8 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 // use termion;
 
-use ::rand::random;
-
 use macroquad::{prelude::*, rand};
 // use termion::raw::IntoRawMode;
 
@@ -130,7 +128,7 @@ fn generate_random_rules(types: u32) -> Arc<[Vec<f32>]> {
     for _ in 0..types {
         let mut rule_row = Vec::new();
         for _ in 0..types {
-            let r = random::<f32>() * 2. - 1.;
+            let r = rand::gen_range(0.0, 1.0_f32) * 2. - 1.;
             // let r: f32 = 0.;
             rule_row.push(r);
         }
@@ -184,7 +182,11 @@ fn window_conf() -> Conf {
 fn generate_colors(types: u32) -> Vec<RgbColor> {
     let mut colors = Vec::new();
     for _ in 0..types {
-        colors.push(RgbColor(random::<u8>(), random::<u8>(), random::<u8>()));
+        colors.push(RgbColor(
+            rand::gen_range(0, 255),
+            rand::gen_range(0, 255),
+            rand::gen_range(0, 255),
+        ));
     }
     colors
 }
